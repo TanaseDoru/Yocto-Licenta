@@ -98,5 +98,39 @@ Yocto project
 Poky = BitBake + OE-Core + Reference metadata + Example distro config
 
 ## Recipe
-- 
+- Set of instructions for building packages
+- Logical unit of execution
+- .bb file extentention
+
+## SBOM (Software Bill of Materials)
+- Documentation for the project
+- Description of all the components used, licences, dependencies,
+changes 
+
+## Source Directory
+- The directory structure made by copying the repo of "poky"
+- File or directory names must not use spaces
+
+## SPDX (Software Package Data Exchange)
+- Is used as an open standard for SBOM through Linux Foundation
+Project
+
+## Sysroot
+- The directory made to look like the target filesystem
+- Contains C library and kernel headers and binaries for the C lib
+- Each recipe has a target sysroot that contains all the target libs
+and headers needed to build the recipe and the native sysroot that
+contains all the host files and execs needed to build the recipe
+
+## Task
+- A per-recipe unit of execution for BitBake (do_compile, do_fetch)
+- Can be excuted in prallel
+
+## Toaster
+- Web interface to the Yocto Project's OpenEmbedded Build System
+- Enables you to configure and run your builds
+
+## Upstream
+- Source code or repos that are not local to the development system
+but located in a remote area
 
