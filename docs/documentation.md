@@ -1,4 +1,4 @@
-# Lista de definitii
+# List of definitions
 ## Append files:
 - Files that append to the recipe files(.bbappend files)
 - Every append file should have a .bb file
