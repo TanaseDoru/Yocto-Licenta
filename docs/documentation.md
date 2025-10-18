@@ -253,4 +253,24 @@ but located in a remote area
  
 ## The Metadata - meta/
 - meta/conf/
- - 
+ - Contains the core config files that start from bitbake.conf and from which all other configuration files are included
+- meta/conf/machine/
+ - Machine configuration files
+- meta/conf/files/
+ - License files
+- meta/lib/
+ - python lib code used during the build process
+
+# Tasks
+ - do_build
+ - do_compile -> compile the source code (current workind dir is ${B})
+ - do_configure -> confiugres the source by enabling and disabling any build-time and conf option for the SW being built
+ - do_deploy -> Writes output files that are to be deployed to ${DEPLOY_DIR_IMAGE} (current working dir is ${B})
+ - do_fetch -> fetched the source code from SRC_URI var
+ - do_image -> starts the image generation process. Performs pre-processing on the image
+ - do_install -> Copies files that are to be packaged into the holding area ${D}
+ - do_package -> Analyzes the content of the holding area ${D} and splits the content into subsets based on available package and files
+ - do_patch -> Locates patch files and applies them to the source code
+  - Uses the FILESPATH variable to determine the default set of dirs when searching for patches
+ - do_populate_sysroot -> stages a subset of the files installed by the do_install task into the appropriate sysroot
+ - do_unpack -> Unpacks the source code into a working directory pointed to by ${WORKDIR}
