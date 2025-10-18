@@ -21,6 +21,7 @@ hob-image-*.bb
 !meta-yocto-bsp
 !meta-yocto-imported
 !meta-mylayer
+!build/conf
 /documentation/*/eclipse/
 /documentation/*/*.html
 /documentation/*/*.pdf
