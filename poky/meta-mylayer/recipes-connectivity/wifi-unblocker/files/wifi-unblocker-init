@@ -1,0 +1,45 @@
+# Calea de plasare: recipes-app/rfkill-watcher/wifi-unblocker-init
+
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          wifi-unblocker
+# Required-Start:    $remote_fs $syslog
+# Required-Stop:     $remote_fs $syslog
+# Default-Start:     3 5
+# Default-Stop:      0 1 2 6
+# Short-Description: Continuous RFKill Unblock Daemon
+# Description:       Runs in a loop to forcefully keep the Wi-Fi interface unblocked.
+### END INIT INFO
+
+DAEMON="/usr/bin/wifi-unblocker.sh"
+NAME="wifi-unblocker"
+PIDFILE="/var/run/$NAME.pid"
+
+test -x $DAEMON || exit 0
+
+case "$1" in
+    start)
+        echo "Starting $NAME daemon..."
+        # Folosim --background si --make-pidfile
+        start-stop-daemon --start --quiet --background --make-pidfile --pidfile $PIDFILE --exec $DAEMON
+        echo "$NAME started."
+        ;;
+    stop)
+        echo "Stopping $NAME daemon..."
+        # Oprim procesul specificat de PIDFILE
+        start-stop-daemon --stop --quiet --pidfile $PIDFILE
+        echo "$NAME stopped."
+        ;;
+    restart|force-reload)
+        $0 stop
+        $0 start
+        ;;
+    status)
+        status -p $PIDFILE $NAME
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}" >&2
+        exit 1
+esac
+
+exit 0
