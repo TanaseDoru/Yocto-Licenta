@@ -1,5 +1,5 @@
-SUMMARY = "A Simple button module for using GPIO5 that will send the signal to the rpi"
-DESCRIPTION = "DHT11 Data collection using libgpio v1.6"
+SUMMARY = "A Simple button module for using GPIO26 that will send the signal to the rpi"
+DESCRIPTION = "Sending the data received from the button to the rpi on GPIO26"
 LICENSE = "CLOSED"
 
 
