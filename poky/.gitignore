@@ -8,6 +8,10 @@ pstage/
 scripts/oe-git-proxy-socks
 sources/
 meta-*/
+meta/
+scripts/
+documentation/
+contrib
 buildtools/
 !meta-skeleton
 !meta-selftest
@@ -16,10 +20,6 @@ hob-image-*.bb
 *.orig
 *.rej
 *~
-!meta-poky
-!meta-yocto
-!meta-yocto-bsp
-!meta-yocto-imported
 !meta-mylayer
 meta-mylayer/recipes-connectivity/connman/files
 !build/conf
