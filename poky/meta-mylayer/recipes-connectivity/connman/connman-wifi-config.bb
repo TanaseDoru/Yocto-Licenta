@@ -6,6 +6,7 @@ LICENSE = "CLOSED"
 SRC_URI = " \
     file://wifi_TP-LINK_D33094_managed_psk.config \
     file://wifi_Network-Name_managed_psk.config \
+    file://wifi_WiFiMotoc_managed_psk.config \
 "
 
 S = "${WORKDIR}"
@@ -18,10 +19,14 @@ do_install() {
     
     # Instalează al doilea fișier
     install -m 0600 ${WORKDIR}/wifi_Network-Name_managed_psk.config ${D}${localstatedir}/lib/connman/
+
+    # Instalează al treilea fisier
+    install -m 0600 ${WORKDIR}/wifi_WiFiMotoc_managed_psk.config ${D}${localstatedir}/lib/connman/
 }
 
 # Include ambele fișiere în lista de instalare a pachetului
 FILES:${PN} = " \
     ${localstatedir}/lib/connman/wifi_TP-LINK_D33094_managed_psk.config \
     ${localstatedir}/lib/connman/wifi_Network-Name_managed_psk.config \
+    ${localstatedir}/lib/connman/wifi_WiFiMotoc_managed_psk.config \
 "

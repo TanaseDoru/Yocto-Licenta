@@ -1,0 +1,24 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          camera-test
+# Required-Start:    $local_fs $syslog
+# Required-Stop:
+# Default-Start:     5
+# Default-Stop:
+# Short-Description: Camera test la boot
+### END INIT INFO
+
+case "$1" in
+  start)
+    echo "Rulare camera-test..."
+    /usr/bin/camera-test.sh > /var/log/camera-test.log 2>&1
+    ;;
+  stop)
+    ;;
+  *)
+    echo "Usage: $0 {start|stop}"
+    exit 1
+    ;;
+esac
+
+exit 0
