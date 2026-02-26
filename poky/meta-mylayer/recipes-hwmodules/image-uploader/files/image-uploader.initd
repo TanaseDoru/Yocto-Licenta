@@ -1,0 +1,97 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          image-uploader
+# Required-Start:    $local_fs $network $syslog
+# Required-Stop:     $local_fs $network $syslog
+# Default-Start:     5
+# Default-Stop:      0 1 6
+# Short-Description: RPi Camera Image Uploader
+# Description:       Captures images from RPi Camera and uploads to central server
+### END INIT INFO
+
+NAME="image-uploader"
+DAEMON="/usr/bin/image-uploader"
+PIDFILE="/var/run/${NAME}.pid"
+LOGFILE="/var/log/${NAME}.log"
+
+# Verifica ca binarul exista
+[ -x "$DAEMON" ] || { echo "$DAEMON not found"; exit 1; }
+
+case "$1" in
+    start)
+        echo "Starting $NAME..."
+
+        # Asteapta camera sa fie disponibila (max 15 secunde)
+        WAIT=0
+        while [ ! -e /dev/video0 ] && [ $WAIT -lt 15 ]; do
+            sleep 1
+            WAIT=$((WAIT + 1))
+        done
+
+        if [ ! -e /dev/video0 ]; then
+            echo "WARNING: /dev/video0 not found, starting anyway..."
+        fi
+
+        # Incarcare modul camera daca nu e incarcat
+        modprobe bcm2835-v4l2 2>/dev/null || true
+
+        # Pornire daemon in background
+        start-stop-daemon --start \
+            --quiet \
+            --background \
+            --make-pidfile \
+            --pidfile "$PIDFILE" \
+            --exec "$DAEMON"
+
+        if [ $? -eq 0 ]; then
+            echo "$NAME started (PID: $(cat $PIDFILE))"
+        else
+            echo "ERROR: Failed to start $NAME"
+            exit 1
+        fi
+        ;;
+
+    stop)
+        echo "Stopping $NAME..."
+        start-stop-daemon --stop \
+            --quiet \
+            --pidfile "$PIDFILE" \
+            --signal TERM
+
+        rm -f "$PIDFILE"
+        echo "$NAME stopped"
+        ;;
+
+    reload)
+        echo "Reloading $NAME config (SIGHUP)..."
+        if [ -f "$PIDFILE" ]; then
+            kill -HUP "$(cat $PIDFILE)"
+            echo "Config reload signal sent"
+        else
+            echo "ERROR: $NAME is not running"
+            exit 1
+        fi
+        ;;
+
+    restart)
+        $0 stop
+        sleep 1
+        $0 start
+        ;;
+
+    status)
+        if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
+            echo "$NAME is running (PID: $(cat $PIDFILE))"
+        else
+            echo "$NAME is NOT running"
+            exit 1
+        fi
+        ;;
+
+    *)
+        echo "Usage: $0 {start|stop|restart|reload|status}"
+        exit 1
+        ;;
+esac
+
+exit 0
