@@ -5,7 +5,6 @@ LICENSE = "CLOSED"
 SRC_URI = "file://data-collector.c \
            file://data-collector.h \
            file://init-script \
-           file://update-server-url.sh \
           "
 
 S = "${WORKDIR}"
@@ -40,10 +39,8 @@ do_install() {
     
     # Script pentru actualizare URL (dacă e nevoie mai târziu)
     install -d ${D}${bindir}
-    install -m 0755 ${WORKDIR}/update-server-url.sh ${D}${bindir}/update-server-url
 }
 
 FILES:${PN} += "${sysconfdir}/init.d/data-collector \
                 ${sysconfdir}/data-collector/server.conf \
-                ${bindir}/update-server-url \
                "

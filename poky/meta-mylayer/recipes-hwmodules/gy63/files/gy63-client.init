@@ -1,0 +1,115 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          gy63-client
+# Required-Start:    $local_fs $syslog data-collector
+# Required-Stop:     $local_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: GY-63 (MS5611) SPI sensor client
+# Description:       Citeste presiunea si temperatura de la senzorul
+#                    GY-63 prin SPI si le trimite prin Unix socket
+#                    catre data-collector.
+### END INIT INFO
+
+NAME="gy63-client"
+DAEMON="/usr/bin/gy63-client"
+PIDFILE="/var/run/${NAME}.pid"
+LOGFILE="/var/log/${NAME}.log"
+
+# Verifică că binarul există
+[ -x "$DAEMON" ] || { echo "$DAEMON nu există sau nu e executabil"; exit 1; }
+
+# Citește configurația dacă există
+[ -f /etc/gy63.conf ] && . /etc/gy63.conf
+
+start() {
+    echo -n "Pornire $NAME: "
+
+    # Verifică dacă rulează deja
+    if [ -f "$PIDFILE" ]; then
+        PID=$(cat "$PIDFILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "deja rulează (PID $PID)"
+            return 1
+        else
+            # PID file stale
+            rm -f "$PIDFILE"
+        fi
+    fi
+
+    # Pornire daemon în background
+    start-stop-daemon --start \
+        --quiet \
+        --background \
+        --make-pidfile \
+        --pidfile "$PIDFILE" \
+        --exec "$DAEMON" \
+        >> "$LOGFILE" 2>&1
+
+    RETVAL=$?
+    if [ $RETVAL -eq 0 ]; then
+        echo "OK"
+    else
+        echo "EROARE (cod $RETVAL)"
+    fi
+    return $RETVAL
+}
+
+stop() {
+    echo -n "Oprire $NAME: "
+
+    if [ ! -f "$PIDFILE" ]; then
+        echo "nu rulează"
+        return 1
+    fi
+
+    start-stop-daemon --stop \
+        --quiet \
+        --pidfile "$PIDFILE" \
+        --signal TERM \
+        --retry 5
+
+    RETVAL=$?
+    if [ $RETVAL -eq 0 ]; then
+        rm -f "$PIDFILE"
+        echo "OK"
+    else
+        echo "EROARE (cod $RETVAL)"
+    fi
+    return $RETVAL
+}
+
+status() {
+    if [ -f "$PIDFILE" ]; then
+        PID=$(cat "$PIDFILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "$NAME rulează (PID $PID)"
+            return 0
+        else
+            echo "$NAME are PID file stale (PID $PID mort)"
+            return 1
+        fi
+    else
+        echo "$NAME nu rulează"
+        return 3
+    fi
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+case "$1" in
+    start)   start   ;;
+    stop)    stop    ;;
+    restart) restart ;;
+    status)  status  ;;
+    *)
+        echo "Utilizare: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+
+exit $?

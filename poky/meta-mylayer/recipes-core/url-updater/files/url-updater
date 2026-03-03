@@ -1,0 +1,127 @@
+#!/bin/sh
+# Update server URLs for:
+#  - data-collector: /etc/data-collector/server.conf (whole file is the URL)
+#  - image-uploader: /etc/image-uploader/uploader.conf (key server_url=...)
+
+DC_CONFIG="/etc/data-collector/server.conf"
+DC_INIT="/etc/init.d/data-collector"
+DC_PIDFILE="/var/run/data-collector.pid"
+
+IU_CONFIG="/etc/image-uploader/uploader.conf"
+IU_INIT="/etc/init.d/image-uploader"
+IU_PIDFILE="/var/run/image-uploader.pid"
+
+usage() {
+    cat <<EOF
+Usage:
+  url-updater data <server-url>
+    Example: url-updater data http://10.8.0.1/data
+
+  url-updater images <server-url>
+    Example: url-updater images http://10.8.0.1/images
+
+  url-updater all <data-url> <images-url>
+    Example: url-updater all http://10.8.0.1/data http://10.8.0.1/images
+
+Notes:
+  - data-collector config is replaced entirely with the given URL.
+  - image-uploader updates/creates the 'server_url=' line in uploader.conf.
+EOF
+}
+
+reload_or_start() {
+    NAME="$1"
+    PIDFILE="$2"
+    INITD="$3"
+
+    echo "Reloading $NAME configuration..."
+
+    if [ -f "$PIDFILE" ]; then
+        PID="$(cat "$PIDFILE" 2>/dev/null)"
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            kill -HUP "$PID"
+            echo "✅ SIGHUP sent to $NAME (PID: $PID)"
+            return 0
+        fi
+    fi
+
+    echo "⚠️  $NAME not running (or PID file missing). Starting service..."
+    if [ -x "$INITD" ]; then
+        "$INITD" start || true
+    else
+        echo "❌ Init script not found: $INITD"
+        return 1
+    fi
+}
+
+update_data_collector() {
+    NEW_URL="$1"
+    if [ -z "$NEW_URL" ]; then
+        usage
+        exit 1
+    fi
+
+    echo "Updating data-collector URL in $DC_CONFIG ..."
+    mkdir -p "$(dirname "$DC_CONFIG")"
+    echo "$NEW_URL" > "$DC_CONFIG"
+    echo "✅ data-collector URL updated to: $NEW_URL"
+
+    reload_or_start "data-collector" "$DC_PIDFILE" "$DC_INIT"
+}
+
+update_image_uploader() {
+    NEW_URL="$1"
+    if [ -z "$NEW_URL" ]; then
+        usage
+        exit 1
+    fi
+
+    echo "Updating image-uploader server_url in $IU_CONFIG ..."
+    mkdir -p "$(dirname "$IU_CONFIG")"
+
+    if [ ! -f "$IU_CONFIG" ]; then
+        # Create minimal config if missing
+        echo "# image-uploader configuration" > "$IU_CONFIG"
+        echo "server_url=$NEW_URL" >> "$IU_CONFIG"
+    else
+        # Replace existing server_url=... line or append if missing
+        if grep -q '^server_url=' "$IU_CONFIG"; then
+            sed -i "s|^server_url=.*|server_url=$NEW_URL|g" "$IU_CONFIG"
+        else
+            echo "server_url=$NEW_URL" >> "$IU_CONFIG"
+        fi
+    fi
+
+    echo "✅ image-uploader server_url updated to: $NEW_URL"
+
+    reload_or_start "image-uploader" "$IU_PIDFILE" "$IU_INIT"
+}
+
+# ---- main ----
+CMD="$1"
+shift || true
+
+case "$CMD" in
+    data)
+        update_data_collector "$1"
+        ;;
+    images|image|uploader)
+        update_image_uploader "$1"
+        ;;
+    all)
+        update_data_collector "$1"
+        update_image_uploader "$2"
+        ;;
+    ""|-h|--help|help)
+        usage
+        exit 0
+        ;;
+    *)
+        echo "❌ Unknown command: $CMD"
+        usage
+        exit 1
+        ;;
+esac
+
+echo "Done!"
+exit 0
