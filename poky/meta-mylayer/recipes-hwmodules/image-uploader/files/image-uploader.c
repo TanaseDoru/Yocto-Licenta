@@ -128,7 +128,7 @@ int capture_image(const UploaderConfig *cfg, char *out_path, size_t out_len)
     /*
      * Build v4l2-ctl command:
      *   v4l2-ctl --device=/dev/video0
-     *             --set-fmt-video=width=1280,height=720,pixelformat=JPEG
+     *             --set-fmt-video=width=1280,height=720,pixelformat=JPEG   
      *             --stream-mmap
      *             --stream-to=/var/lib/image-uploader/rpi4-camera_<ts>.jpg
      *             --stream-count=1

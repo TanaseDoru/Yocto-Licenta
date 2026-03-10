@@ -18,6 +18,9 @@
 #define BUFFER_SIZE 1024
 #define MAX_SENSORS 25
 #define SEND_INTERVAL 10
+#define LOCAL_FALLBACK_PATH "/var/spool/data-collector/unsent.jsonl"
+#define RETRY_COUNT 3
+#define RETRY_DELAY_SEC 2
 
 typedef struct {
     char sensor_name[64];
@@ -39,5 +42,9 @@ char* create_json_payload(DataStore* store);
 void signal_handler(int signum);
 void cleanup();
 void log_message(const char *fmt, ...);
+
+
+int send_with_retry_or_store(const char *json_data, const char *server_url);
+int store_locally(const char *json_data);
 
 #endif

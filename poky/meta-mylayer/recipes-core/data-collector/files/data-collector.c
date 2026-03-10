@@ -1,6 +1,8 @@
 #include "data-collector.h"
 
 #include <math.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 static volatile int running = 1;
 static volatile sig_atomic_t reload_config = 0;
@@ -235,6 +237,74 @@ void *socket_listener(void *arg) {
   return NULL;
 }
 
+
+
+static int ensure_parent_dir(const char *path) {
+  // Creează /var/spool/data-collector dacă nu există
+  // (simplu: hardcode dir-ul părinte)
+  const char *dir = "/var/spool/data-collector";
+  struct stat st;
+  if (stat(dir, &st) == 0) {
+    if (S_ISDIR(st.st_mode)) return 0;
+    return -1;
+  }
+  if (mkdir(dir, 0755) == 0) return 0;
+  return -1;
+}
+
+int store_locally(const char *json_data) {
+  if (!json_data) return 0;
+
+  if (ensure_parent_dir(LOCAL_FALLBACK_PATH) != 0) {
+    log_message("Fallback store: cannot create parent dir for %s", LOCAL_FALLBACK_PATH);
+    return 0;
+  }
+
+  FILE *fp = fopen(LOCAL_FALLBACK_PATH, "a");
+  if (!fp) {
+    log_message("Fallback store: failed to open %s: %s", LOCAL_FALLBACK_PATH, strerror(errno));
+    return 0;
+  }
+
+  // Timestamp local (secunde epoch) + o formă umană
+  time_t now = time(NULL);
+  struct tm tm_local;
+  localtime_r(&now, &tm_local);
+
+  char iso[32];
+  // ex: 2026-03-05T14:22:11+0200 (offset-ul e cel al sistemului)
+  strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%S%z", &tm_local);
+
+  // Scriem un JSON pe linie: {"board_time_epoch":..., "board_time_iso":"...", "payload":{...}}
+  // Atenție: payload-ul tău e deja JSON string (începe cu '{' și se termină cu '}')
+  // Îl includem ca obiect, nu ca string, ca să rămână “datele exact cum le-ai trimite”.
+  fprintf(fp,
+          "{\"board_time_epoch\":%ld,\"board_time_iso\":\"%s\",\"payload\":%s}\n",
+          (long)now, iso, json_data);
+
+  fflush(fp);
+  fclose(fp);
+
+  log_message("Stored unsent payload locally to %s", LOCAL_FALLBACK_PATH);
+  return 1;
+}
+
+int send_with_retry_or_store(const char *json_data, const char *server_url) {
+  for (int attempt = 1; attempt <= RETRY_COUNT; attempt++) {
+    if (send_to_server(json_data, server_url)) {
+      return 1; // succes
+    }
+    log_message("Send attempt %d/%d failed", attempt, RETRY_COUNT);
+    if (attempt < RETRY_COUNT) {
+      sleep(RETRY_DELAY_SEC);
+    }
+  }
+
+  // După 3 încercări eșuate -> salvăm local
+  store_locally(json_data);
+  return 0;
+}
+
 void *web_sender(void *arg) {
   char *server_url = (char *)arg;
   // Make a local copy to allow modification safely if needed,
@@ -265,7 +335,14 @@ void *web_sender(void *arg) {
       if (json) {
         printf("Sending data: %s\n", json);
         log_message("Sending data: %s", json);
-        if (send_to_server(json, server_url)) {
+        if (send_with_retry_or_store(json, server_url)) {
+          pthread_mutex_lock(&data_store.lock);
+          data_store.count = 0;
+          pthread_mutex_unlock(&data_store.lock);
+        } else {
+          // IMPORTANT:
+          // Eu aș goli și aici coada din memorie, ca să nu tot încerci să retrimiți același payload la infinit.
+          // Dacă vrei să păstrezi în RAM ca să mai încerci, riști duplicate când revine netul (și ai și în fișier).
           pthread_mutex_lock(&data_store.lock);
           data_store.count = 0;
           pthread_mutex_unlock(&data_store.lock);

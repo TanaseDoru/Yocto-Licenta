@@ -25,7 +25,9 @@ Usage:
 
 Notes:
   - data-collector config is replaced entirely with the given URL.
-  - image-uploader updates/creates the 'server_url=' line in uploader.conf.
+  - current URLs can be found in $DC_CONFIG and $IU_CONFIG
+  - current URLs are $(cat "$DC_CONFIG" 2>/dev/null || echo "not set") for data-collector and
+    $(grep '^server_url=' "$IU_CONFIG" 2>/dev/null || echo "not set") for image-uploader.
 EOF
 }
 
