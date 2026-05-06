@@ -1,0 +1,118 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          tailscaled
+# Required-Start:    $network $remote_fs
+# Required-Stop:     $network $remote_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Tailscale daemon
+# Description:       Starts tailscaled and performs first-boot authentication
+### END INIT INFO
+
+DAEMON="/usr/bin/tailscaled"
+TAILSCALE="/usr/bin/tailscale"
+PIDFILE="/var/run/tailscaled.pid"
+LOG_FILE="/var/log/tailscaled.log"
+STATE_DIR="/var/lib/tailscale"
+STATE_FILE="${STATE_DIR}/tailscaled.state"
+
+# How long to wait for tailscaled to be ready before running tailscale up
+STARTUP_WAIT=5
+
+# How long to wait for tailscale up to complete (network may be slow)
+UP_WAIT=30
+
+start() {
+    echo "Starting tailscaled..."
+    mkdir -p "$STATE_DIR"
+    touch "$LOG_FILE"
+
+    if [ ! -x "$DAEMON" ]; then
+        echo "$DAEMON not found or not executable"
+        return 1
+    fi
+
+    start-stop-daemon --start --quiet --background \
+        --make-pidfile --pidfile "$PIDFILE" \
+        --exec "$DAEMON" -- \
+        --state "$STATE_FILE" \
+        >> "$LOG_FILE" 2>&1
+
+    # Give the daemon time to initialise its socket before we talk to it
+    echo "Waiting ${STARTUP_WAIT}s for tailscaled to be ready..."
+    sleep "$STARTUP_WAIT"
+
+    # Only run tailscale up if not already authenticated
+    # (state file exists and contains a non-empty node key means we're logged in)
+    if [ -x "$TAILSCALE" ]; then
+        STATUS=$("$TAILSCALE" status 2>&1)
+        if echo "$STATUS" | grep -q "Logged out\|NeedsLogin\|not logged in"; then
+            echo "tailscale: not authenticated, running tailscale up..."
+            echo "tailscale: a login URL will appear — open it on any browser" >> "$LOG_FILE"
+            # Run in background — it will print a URL and wait for auth
+            # We give it UP_WAIT seconds then continue boot regardless
+            "$TAILSCALE" up >> "$LOG_FILE" 2>&1 &
+            UP_PID=$!
+            WAITED=0
+            while [ $WAITED -lt $UP_WAIT ]; do
+                if ! kill -0 $UP_PID 2>/dev/null; then
+                    break
+                fi
+                sleep 2
+                WAITED=$((WAITED + 2))
+            done
+            echo "tailscale up: proceeding with boot (auth may still be pending)" >> "$LOG_FILE"
+        else
+            echo "tailscale: already authenticated, skipping tailscale up"
+            echo "tailscale: already authenticated" >> "$LOG_FILE"
+        fi
+    fi
+}
+
+stop() {
+    echo "Stopping tailscaled..."
+    if [ -f "$PIDFILE" ]; then
+        start-stop-daemon --stop --quiet --pidfile "$PIDFILE" --retry 5
+        rm -f "$PIDFILE"
+    else
+        killall tailscaled 2>/dev/null || true
+    fi
+}
+
+status() {
+    if [ -f "$PIDFILE" ]; then
+        pid=$(cat "$PIDFILE")
+        if [ -d "/proc/$pid" ]; then
+            echo "tailscaled running (pid $pid)"
+            if [ -x "$TAILSCALE" ]; then
+                "$TAILSCALE" status 2>&1
+            fi
+            return 0
+        fi
+    fi
+    echo "tailscaled not running"
+    return 1
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 1
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+
+exit 0

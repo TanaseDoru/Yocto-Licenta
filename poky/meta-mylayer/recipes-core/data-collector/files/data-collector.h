@@ -46,5 +46,6 @@ void log_message(const char *fmt, ...);
 
 int send_with_retry_or_store(const char *json_data, const char *server_url);
 int store_locally(const char *json_data);
+void compute_derived_metrics(DataStore *store);
 
 #endif

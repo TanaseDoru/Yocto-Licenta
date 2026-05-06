@@ -27,6 +27,7 @@
 #define DEFAULT_INTERVAL    30          /* seconds between captures     */
 #define DEFAULT_MAX_RETRIES 3
 #define DEFAULT_RETRY_DELAY 5           /* seconds between retries      */
+#define DEFAULT_API_KEY     ""
 
 /* ------------------------------------------------------------------ */
 /*  Runtime configuration (loaded from file)                           */
@@ -36,6 +37,7 @@ typedef struct {
     char device_id  [64];
     char v4l2_dev   [64];
     char capture_dir[256];
+    char api_key    [256];
     int  width;
     int  height;
     int  interval;

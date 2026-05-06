@@ -1,0 +1,10 @@
+{
+  "files.watcherExclude": {
+    "**/tmp/**": true,
+    "**/.git/**": true
+  },
+  "files.exclude": {
+    "**/tmp/**": true
+  },
+  "C_Cpp.exclusionPolicy": "checkFolderNames"
+}

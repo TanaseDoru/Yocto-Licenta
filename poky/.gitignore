@@ -40,3 +40,4 @@ downloads/
 sstate-cache/
 toaster.sqlite
 .vscode/
+meta-mylayer/recipes-connectivity/openvpn/files/*

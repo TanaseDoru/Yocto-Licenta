@@ -1,4 +1,8 @@
 #include "image-uploader.h"
+#include <fcntl.h>
+#include <sys/file.h>
+
+#define CAMERA_LOCK_PATH "/var/lock/camera_v4l2.lock"
 
 /* ------------------------------------------------------------------ */
 /*  Globals                                                             */
@@ -69,6 +73,7 @@ void load_config(UploaderConfig *cfg)
     strncpy(cfg->device_id,   DEFAULT_DEVICE_ID,   sizeof(cfg->device_id)   - 1);
     strncpy(cfg->v4l2_dev,    DEFAULT_V4L2_DEV,    sizeof(cfg->v4l2_dev)    - 1);
     strncpy(cfg->capture_dir, DEFAULT_CAPTURE_DIR, sizeof(cfg->capture_dir) - 1);
+    strncpy(cfg->api_key,     DEFAULT_API_KEY,     sizeof(cfg->api_key)     - 1);
     cfg->width       = DEFAULT_WIDTH;
     cfg->height      = DEFAULT_HEIGHT;
     cfg->interval    = DEFAULT_INTERVAL;
@@ -103,6 +108,7 @@ void load_config(UploaderConfig *cfg)
         else if (strcmp(key, "interval")    == 0) cfg->interval    = atoi(val);
         else if (strcmp(key, "max_retries") == 0) cfg->max_retries = atoi(val);
         else if (strcmp(key, "retry_delay") == 0) cfg->retry_delay = atoi(val);
+        else if (strcmp(key, "api_key")     == 0) strncpy(cfg->api_key, val, sizeof(cfg->api_key) - 1);
     }
 
     fclose(f);
@@ -118,21 +124,24 @@ void load_config(UploaderConfig *cfg)
 /* ------------------------------------------------------------------ */
 int capture_image(const UploaderConfig *cfg, char *out_path, size_t out_len)
 {
-    /* Ensure capture directory exists */
     mkdir(cfg->capture_dir, 0755);
 
     time_t ts = time(NULL);
     snprintf(out_path, out_len, "%s/%s_%ld.jpg",
              cfg->capture_dir, cfg->device_id, (long)ts);
 
-    /*
-     * Build v4l2-ctl command:
-     *   v4l2-ctl --device=/dev/video0
-     *             --set-fmt-video=width=1280,height=720,pixelformat=JPEG   
-     *             --stream-mmap
-     *             --stream-to=/var/lib/image-uploader/rpi4-camera_<ts>.jpg
-     *             --stream-count=1
-     */
+    /* Blocking lock — snapshot waits for camera-stream to finish its frame */
+    int lock_fd = open(CAMERA_LOCK_PATH, O_CREAT | O_RDWR, 0644);
+    if (lock_fd < 0) {
+        log_message("ERROR: cannot open lock file %s", CAMERA_LOCK_PATH);
+        return -1;
+    }
+    if (flock(lock_fd, LOCK_EX) < 0) {
+        log_message("ERROR: flock failed");
+        close(lock_fd);
+        return -1;
+    }
+
     char cmd[1024];
     snprintf(cmd, sizeof(cmd),
              "v4l2-ctl --device=%s "
@@ -144,14 +153,16 @@ int capture_image(const UploaderConfig *cfg, char *out_path, size_t out_len)
              cfg->v4l2_dev, cfg->width, cfg->height, out_path);
 
     log_message("Capturing: %s", cmd);
-
     int ret = system(cmd);
+
+    flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+
     if (ret != 0) {
         log_message("ERROR: v4l2-ctl failed (exit %d)", ret);
         return -1;
     }
 
-    /* Sanity check: file must exist and be non-empty */
     struct stat st;
     if (stat(out_path, &st) < 0 || st.st_size == 0) {
         log_message("ERROR: captured file missing or empty: %s", out_path);
@@ -215,8 +226,15 @@ int upload_image(const UploaderConfig *cfg, const char *filepath)
     curl_mime_name(part, "timestamp");
     curl_mime_data(part, ts_str, CURL_ZERO_TERMINATED);
 
+    /* Add X-API-Key header for server authentication */
+    struct curl_slist *headers = NULL;
+    char api_key_header[320];
+    snprintf(api_key_header, sizeof(api_key_header), "X-API-Key: %s", cfg->api_key);
+    headers = curl_slist_append(headers, api_key_header);
+
     curl_easy_setopt(curl, CURLOPT_URL,           cfg->server_url);
     curl_easy_setopt(curl, CURLOPT_MIMEPOST,      form);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER,    headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT,       30L);
 
@@ -238,6 +256,7 @@ int upload_image(const UploaderConfig *cfg, const char *filepath)
     }
 
     curl_mime_free(form);
+    curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     return success ? 0 : -1;
 }

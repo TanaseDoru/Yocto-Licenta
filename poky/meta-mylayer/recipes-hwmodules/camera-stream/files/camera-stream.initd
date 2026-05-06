@@ -1,0 +1,49 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          camera-stream
+# Required-Start:    $network tailscaled
+# Required-Stop:     $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: RPi Camera Stream Pusher
+### END INIT INFO
+
+DAEMON=/usr/bin/camera-stream
+PIDFILE=/var/run/camera-stream.pid
+NAME=camera-stream
+
+case "$1" in
+    start)
+        echo "Starting $NAME..."
+        start-stop-daemon --start --quiet --background \
+            --make-pidfile --pidfile $PIDFILE \
+            --exec $DAEMON
+        ;;
+    stop)
+        echo "Stopping $NAME..."
+        start-stop-daemon --stop --quiet --pidfile $PIDFILE
+        rm -f $PIDFILE
+        ;;
+    restart)
+        $0 stop
+        sleep 1
+        $0 start
+        ;;
+    reload)
+        echo "Reloading $NAME config..."
+        start-stop-daemon --stop --signal HUP --quiet --pidfile $PIDFILE
+        ;;
+    status)
+        if [ -f $PIDFILE ] && kill -0 $(cat $PIDFILE) 2>/dev/null; then
+            echo "$NAME is running (pid $(cat $PIDFILE))"
+        else
+            echo "$NAME is not running"
+        fi
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|reload|status}"
+        exit 1
+        ;;
+esac
+
+exit 0

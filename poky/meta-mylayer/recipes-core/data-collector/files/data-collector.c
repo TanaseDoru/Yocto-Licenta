@@ -86,40 +86,51 @@ int send_to_server(const char *json_data, const char *server_url) {
 
   curl = curl_easy_init();
   if (!curl) {
-    fprintf(stderr, "Error: curl_easy_init() failed\n");
     log_message("Error: curl_easy_init() failed");
+    return 0;
   }
-  if (curl) {
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    curl_easy_setopt(curl, CURLOPT_URL, server_url);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_data);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-
-    res = curl_easy_perform(curl);
-
-    if (res != CURLE_OK) {
-      fprintf(stderr, "curl_easy_perform() failed: %s\n",
-              curl_easy_strerror(res));
-    } else {
-      long response_code;
-      curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
-      // 200 - OK || 201 - Created
-      if (response_code == 200 || response_code == 201) {
-        success = 1;
-        printf("Data sent successfully\n");
-      } else {
-        fprintf(stderr, "Server returned code: %ld\n", response_code);
-      }
+  // Read API key from file
+  char api_key_header[300] = "X-API-Key: ";
+  FILE *kf = fopen("/etc/data-collector/api.key", "r");
+  if (kf) {
+    char key[256] = {0};
+    if (fgets(key, sizeof(key), kf)) {
+      key[strcspn(key, "\n")] = 0;
+      strncat(api_key_header, key, sizeof(api_key_header) - strlen(api_key_header) - 1);
     }
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
+    fclose(kf);
+  } else {
+    log_message("Warning: cannot open /etc/data-collector/api.key");
   }
 
+  struct curl_slist *headers = NULL;
+  headers = curl_slist_append(headers, "Content-Type: application/json");
+  headers = curl_slist_append(headers, api_key_header);
+
+  curl_easy_setopt(curl, CURLOPT_URL, server_url);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_data);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+
+  res = curl_easy_perform(curl);
+
+  if (res != CURLE_OK) {
+    log_message("curl failed: %s", curl_easy_strerror(res));
+  } else {
+    long response_code;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+    if (response_code == 200 || response_code == 201) {
+      success = 1;
+      log_message("Data sent successfully (HTTP %ld)", response_code);
+    } else {
+      log_message("Server returned HTTP %ld", response_code);
+    }
+  }
+
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
   return success;
 }
 
@@ -305,6 +316,100 @@ int send_with_retry_or_store(const char *json_data, const char *server_url) {
   return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Derived metrics                                                     */
+/* ------------------------------------------------------------------ */
+
+static int find_sensor(DataStore *store, const char *name, float *out_value)
+{
+    for (int i = 0; i < store->count; i++) {
+        if (strcmp(store->data[i].sensor_name, name) == 0) {
+            *out_value = store->data[i].value;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void add_derived(DataStore *store, const char *name, float value)
+{
+    if (store->count >= MAX_SENSORS)
+        return;
+    strncpy(store->data[store->count].sensor_name, name,
+            sizeof(store->data[0].sensor_name) - 1);
+    store->data[store->count].sensor_name[sizeof(store->data[0].sensor_name) - 1] = '\0';
+    store->data[store->count].value     = value;
+    store->data[store->count].timestamp = time(NULL);
+    store->count++;
+}
+
+/*
+ * Calculates dew_point, heat_index, abs_humidity from HTU21D readings.
+ * Called from web_sender before serialization; adds results as new
+ * virtual sensors so they flow through the existing pipeline unchanged.
+ */
+void compute_derived_metrics(DataStore *store)
+{
+    /* Last known values — persist across cycles until both are available */
+    static float cached_temp = 0.0f;
+    static float cached_rh   = 0.0f;
+    static int   have_temp   = 0;
+    static int   have_rh     = 0;
+
+    float temp, rh;
+
+    pthread_mutex_lock(&store->lock);
+
+    if (find_sensor(store, "htu21d_temp", &temp)) {
+        cached_temp = temp;
+        have_temp   = 1;
+    }
+    if (find_sensor(store, "htu21d_rh", &rh)) {
+        cached_rh = rh;
+        have_rh   = 1;
+    }
+
+    if (!have_temp || !have_rh || cached_rh <= 0.0f || cached_rh > 100.0f) {
+        pthread_mutex_unlock(&store->lock);
+        log_message("Derived metrics: waiting for %s%s",
+                    !have_temp ? "htu21d_temp " : "",
+                    !have_rh   ? "htu21d_rh"   : "");
+        return;
+    }
+
+    temp = cached_temp;
+    rh   = cached_rh;
+
+    /* Dew point — August-Roche-Magnus approximation (°C) */
+    double gamma     = (17.625 * temp) / (243.04 + temp) + log(rh / 100.0);
+    float  dew_point = (float)(243.04 * gamma / (17.625 - gamma));
+    add_derived(store, "dew_point", dew_point);
+
+    /* Heat index — Rothfusz equation, converted from °F result to °C */
+    double T_f  = temp * 9.0 / 5.0 + 32.0;
+    double HI_f = -42.379
+                + 2.04901523  * T_f
+                + 10.14333127 * rh
+                - 0.22475541  * T_f * rh
+                - 0.00683783  * T_f * T_f
+                - 0.05481717  * rh  * rh
+                + 0.00122874  * T_f * T_f * rh
+                + 0.00085282  * T_f * rh  * rh
+                - 0.00000199  * T_f * T_f * rh * rh;
+    float heat_index = (float)((HI_f - 32.0) * 5.0 / 9.0);
+    add_derived(store, "heat_index", heat_index);
+
+    /* Absolute humidity (g/m³) */
+    double abs_hum = (6.112 * exp(17.67 * temp / (temp + 243.5)) * rh * 2.1674)
+                   / (273.15 + temp);
+    add_derived(store, "abs_humidity", (float)abs_hum);
+
+    pthread_mutex_unlock(&store->lock);
+
+    log_message("Derived: dew_point=%.2f heat_index=%.2f abs_humidity=%.2f",
+                dew_point, heat_index, (float)abs_hum);
+}
+
 void *web_sender(void *arg) {
   char *server_url = (char *)arg;
   // Make a local copy to allow modification safely if needed,
@@ -331,6 +436,7 @@ void *web_sender(void *arg) {
     sleep(SEND_INTERVAL);
 
     if (data_store.count > 0) {
+      compute_derived_metrics(&data_store);
       char *json = create_json_payload(&data_store);
       if (json) {
         printf("Sending data: %s\n", json);
