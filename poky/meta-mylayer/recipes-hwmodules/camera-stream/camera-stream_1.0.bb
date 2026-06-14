@@ -49,10 +49,13 @@ do_install() {
     install -d ${D}${sysconfdir}/camera-stream
     install -m 0600 ${WORKDIR}/stream.conf \
         ${D}${sysconfdir}/camera-stream/stream.conf
+
+    install -d ${D}/var/spool/camera-stream
 }
 
 FILES:${PN} = " \
     ${bindir}/camera-stream \
     ${sysconfdir}/init.d/camera-stream \
     ${sysconfdir}/camera-stream/stream.conf \
+    /var/spool/camera-stream \
 "

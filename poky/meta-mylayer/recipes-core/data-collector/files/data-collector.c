@@ -263,40 +263,126 @@ static int ensure_parent_dir(const char *path) {
   return -1;
 }
 
+int disk_space_ok(void) {
+  struct statvfs vfs;
+  const char *check = “/var/spool”;
+  if (statvfs(check, &vfs) != 0) return 1; /* assume ok on error */
+  unsigned long long free_bytes = (unsigned long long)vfs.f_bavail * (unsigned long long)vfs.f_bsize;
+  return free_bytes >= OFFLINE_MIN_FREE_BYTES;
+}
+
+static int count_lines(const char *path) {
+  FILE *fp = fopen(path, “r”);
+  if (!fp) return 0;
+  int count = 0, c;
+  while ((c = fgetc(fp)) != EOF)
+    if (c == '\n') count++;
+  fclose(fp);
+  return count;
+}
+
+void trim_offline_queue(void) {
+  int lines = count_lines(LOCAL_FALLBACK_PATH);
+  if (lines <= MAX_OFFLINE_LINES) return;
+
+  int to_skip = lines - MAX_OFFLINE_LINES;
+  char tmp[280];
+  snprintf(tmp, sizeof(tmp), “%s.trim”, LOCAL_FALLBACK_PATH);
+
+  FILE *in  = fopen(LOCAL_FALLBACK_PATH, “r”);
+  FILE *out = fopen(tmp, “w”);
+  if (!in || !out) {
+    if (in)  fclose(in);
+    if (out) fclose(out);
+    return;
+  }
+
+  char line[8192];
+  int skipped = 0;
+  while (fgets(line, sizeof(line), in)) {
+    if (skipped < to_skip) { skipped++; continue; }
+    fputs(line, out);
+  }
+  fclose(in);
+  fclose(out);
+  rename(tmp, LOCAL_FALLBACK_PATH);
+  log_message(“Offline queue trimmed: removed %d oldest entries (kept %d)”,
+              to_skip, MAX_OFFLINE_LINES);
+}
+
+void drain_offline_queue(const char *server_url) {
+  FILE *fp = fopen(LOCAL_FALLBACK_PATH, “r”);
+  if (!fp) return;
+
+  char tmp[280];
+  snprintf(tmp, sizeof(tmp), “%s.drain”, LOCAL_FALLBACK_PATH);
+  FILE *failed = fopen(tmp, “w”);
+  if (!failed) { fclose(fp); return; }
+
+  char line[8192];
+  int sent = 0, kept = 0;
+  while (fgets(line, sizeof(line), fp)) {
+    line[strcspn(line, “\n”)] = '\0';
+    if (line[0] == '\0') continue;
+
+    if (send_to_server(line, server_url)) {
+      sent++;
+    } else {
+      /* Server still unreachable — stop draining, keep the rest */
+      fprintf(failed, “%s\n”, line);
+      kept++;
+      while (fgets(line, sizeof(line), fp)) { /* copy remaining */
+        fputs(line, failed);
+        kept++;
+      }
+      break;
+    }
+  }
+  fclose(fp);
+  fclose(failed);
+
+  if (kept == 0) {
+    unlink(LOCAL_FALLBACK_PATH);
+    unlink(tmp);
+  } else {
+    rename(tmp, LOCAL_FALLBACK_PATH);
+  }
+
+  if (sent > 0 || kept > 0)
+    log_message(“Offline queue drain: sent=%d, remaining=%d”, sent, kept);
+}
+
 int store_locally(const char *json_data) {
   if (!json_data) return 0;
 
+  if (!disk_space_ok()) {
+    log_message(“Fallback store: low disk space, trimming offline queue”);
+    trim_offline_queue();
+    if (!disk_space_ok()) {
+      log_message(“Fallback store: still not enough space, dropping payload”);
+      return 0;
+    }
+  }
+
   if (ensure_parent_dir(LOCAL_FALLBACK_PATH) != 0) {
-    log_message("Fallback store: cannot create parent dir for %s", LOCAL_FALLBACK_PATH);
+    log_message(“Fallback store: cannot create parent dir for %s”, LOCAL_FALLBACK_PATH);
     return 0;
   }
 
-  FILE *fp = fopen(LOCAL_FALLBACK_PATH, "a");
+  trim_offline_queue(); /* enforce line-count limit */
+
+  FILE *fp = fopen(LOCAL_FALLBACK_PATH, “a”);
   if (!fp) {
-    log_message("Fallback store: failed to open %s: %s", LOCAL_FALLBACK_PATH, strerror(errno));
+    log_message(“Fallback store: failed to open %s: %s”, LOCAL_FALLBACK_PATH, strerror(errno));
     return 0;
   }
 
-  // Timestamp local (secunde epoch) + o formă umană
-  time_t now = time(NULL);
-  struct tm tm_local;
-  localtime_r(&now, &tm_local);
-
-  char iso[32];
-  // ex: 2026-03-05T14:22:11+0200 (offset-ul e cel al sistemului)
-  strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%S%z", &tm_local);
-
-  // Scriem un JSON pe linie: {"board_time_epoch":..., "board_time_iso":"...", "payload":{...}}
-  // Atenție: payload-ul tău e deja JSON string (începe cu '{' și se termină cu '}')
-  // Îl includem ca obiect, nu ca string, ca să rămână “datele exact cum le-ai trimite”.
-  fprintf(fp,
-          "{\"board_time_epoch\":%ld,\"board_time_iso\":\"%s\",\"payload\":%s}\n",
-          (long)now, iso, json_data);
-
+  /* Store raw JSON payload — already contains “timestamp” field */
+  fprintf(fp, “%s\n”, json_data);
   fflush(fp);
   fclose(fp);
 
-  log_message("Stored unsent payload locally to %s", LOCAL_FALLBACK_PATH);
+  log_message(“Stored unsent payload locally to %s”, LOCAL_FALLBACK_PATH);
   return 1;
 }
 
@@ -441,19 +527,17 @@ void *web_sender(void *arg) {
       if (json) {
         printf("Sending data: %s\n", json);
         log_message("Sending data: %s", json);
-        if (send_with_retry_or_store(json, server_url)) {
-          pthread_mutex_lock(&data_store.lock);
-          data_store.count = 0;
-          pthread_mutex_unlock(&data_store.lock);
-        } else {
-          // IMPORTANT:
-          // Eu aș goli și aici coada din memorie, ca să nu tot încerci să retrimiți același payload la infinit.
-          // Dacă vrei să păstrezi în RAM ca să mai încerci, riști duplicate când revine netul (și ai și în fișier).
-          pthread_mutex_lock(&data_store.lock);
-          data_store.count = 0;
-          pthread_mutex_unlock(&data_store.lock);
-        }
+        int ok = send_with_retry_or_store(json, server_url);
         free(json);
+
+        pthread_mutex_lock(&data_store.lock);
+        data_store.count = 0;
+        pthread_mutex_unlock(&data_store.lock);
+
+        if (ok) {
+          /* Connection is up — drain any previously stored offline payloads */
+          drain_offline_queue(server_url);
+        }
       }
     } else {
       printf("No sensor data to send yet\n");

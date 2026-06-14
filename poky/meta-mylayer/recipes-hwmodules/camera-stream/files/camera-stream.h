@@ -14,6 +14,8 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/statvfs.h>
+#include <dirent.h>
 #include <linux/videodev2.h>
 #include <curl/curl.h>
 #include <jpeglib.h>
@@ -33,7 +35,10 @@
 #define DEFAULT_JPEG_QUALITY        75   /* 1-100; 75 balances quality and size */
 #define DEFAULT_API_KEY             ""
 
-#define N_BUFFERS 4
+#define N_BUFFERS             4
+#define OFFLINE_FRAMES_DIR    "/var/spool/camera-stream"
+#define MAX_OFFLINE_FRAMES    100
+#define OFFLINE_MIN_FREE_BYTES (20ULL * 1024ULL * 1024ULL)
 
 typedef struct {
     void   *start;

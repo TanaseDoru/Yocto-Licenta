@@ -322,6 +322,138 @@ static int post_jpeg(CURL *curl, struct curl_slist *headers,
 }
 
 /* ------------------------------------------------------------------ */
+/*  Offline frame storage — circular buffer on the local filesystem    */
+/* ------------------------------------------------------------------ */
+
+static int offline_disk_ok(void)
+{
+    struct statvfs vfs;
+    if (statvfs("/var/spool", &vfs) != 0) return 1;
+    unsigned long long free_bytes = (unsigned long long)vfs.f_bavail
+                                  * (unsigned long long)vfs.f_bsize;
+    return free_bytes >= OFFLINE_MIN_FREE_BYTES;
+}
+
+static int offline_frames_ensure_dir(void)
+{
+    struct stat st;
+    if (stat(OFFLINE_FRAMES_DIR, &st) == 0) return S_ISDIR(st.st_mode) ? 0 : -1;
+    return mkdir(OFFLINE_FRAMES_DIR, 0755);
+}
+
+static int cmp_str_ptr(const void *a, const void *b)
+{
+    return strcmp(*(const char **)a, *(const char **)b);
+}
+
+/* Returns number of .jpg files found, fills names[] (caller frees each entry). */
+static int list_offline_frames(char **names, int max)
+{
+    DIR *dir = opendir(OFFLINE_FRAMES_DIR);
+    if (!dir) return 0;
+    int count = 0;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL && count < max) {
+        size_t nlen = strlen(ent->d_name);
+        if (nlen < 4 || strcmp(ent->d_name + nlen - 4, ".jpg") != 0) continue;
+        names[count] = strdup(ent->d_name);
+        if (names[count]) count++;
+    }
+    closedir(dir);
+    qsort(names, count, sizeof(char *), cmp_str_ptr);
+    return count;
+}
+
+static void offline_frames_trim(void)
+{
+    char *names[MAX_OFFLINE_FRAMES + 64];
+    int count = list_offline_frames(names, MAX_OFFLINE_FRAMES + 64);
+    if (count <= MAX_OFFLINE_FRAMES) {
+        for (int i = 0; i < count; i++) free(names[i]);
+        return;
+    }
+    int to_delete = count - MAX_OFFLINE_FRAMES;
+    char path[512];
+    for (int i = 0; i < count; i++) {
+        if (i < to_delete) {
+            snprintf(path, sizeof(path), "%s/%s", OFFLINE_FRAMES_DIR, names[i]);
+            unlink(path);
+        }
+        free(names[i]);
+    }
+    log_message("offline_frames_trim: removed %d oldest frames (kept %d)",
+                to_delete, MAX_OFFLINE_FRAMES);
+}
+
+static int offline_frames_store(const unsigned char *data, size_t size)
+{
+    if (offline_frames_ensure_dir() != 0) return 0;
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%ld%09ld.jpg",
+             OFFLINE_FRAMES_DIR, (long)ts.tv_sec, (long)ts.tv_nsec);
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        log_message("offline_frames_store: cannot create %s: %s", path, strerror(errno));
+        return 0;
+    }
+    fwrite(data, 1, size, fp);
+    fclose(fp);
+    log_message("Stored offline frame (%zu B): %s", size, path);
+    return 1;
+}
+
+/* Sends up to max_batch stored frames; stops on first POST failure. */
+static void offline_frames_drain_batch(const StreamConfig *cfg,
+                                        CURL *curl,
+                                        struct curl_slist *hdrs,
+                                        int max_batch)
+{
+    char *names[MAX_OFFLINE_FRAMES + 64];
+    int count = list_offline_frames(names, MAX_OFFLINE_FRAMES + 64);
+    if (count == 0) return;
+
+    int sent = 0;
+    char path[512];
+    for (int i = 0; i < count && sent < max_batch; i++) {
+        snprintf(path, sizeof(path), "%s/%s", OFFLINE_FRAMES_DIR, names[i]);
+
+        FILE *fp = fopen(path, "rb");
+        if (!fp) { free(names[i]); continue; }
+
+        fseek(fp, 0, SEEK_END);
+        long fsz = ftell(fp);
+        rewind(fp);
+        unsigned char *buf = malloc((size_t)fsz);
+        if (!buf) { fclose(fp); free(names[i]); continue; }
+        fread(buf, 1, (size_t)fsz, fp);
+        fclose(fp);
+
+        int ok = post_jpeg(curl, hdrs, cfg->server_stream_url,
+                           cfg->device_id, buf, (size_t)fsz, "frame", "frame.jpg");
+        free(buf);
+
+        if (ok == 0) {
+            unlink(path);
+            sent++;
+        } else {
+            free(names[i]);
+            for (int j = i + 1; j < count; j++) free(names[j]);
+            break;
+        }
+        free(names[i]);
+    }
+
+    if (sent > 0)
+        log_message("offline_frames_drain: sent=%d, remaining=%d",
+                    sent, count - sent);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Push thread — sends latest JPEG to server as fast as it arrives    */
 /* ------------------------------------------------------------------ */
 typedef struct { const StreamConfig *cfg; } PushArg;
@@ -349,9 +481,23 @@ static void *push_thread(void *arg)
 
         if (!copy) continue;
 
+        int ok = -1;
         if (curl_stream)
-            post_jpeg(curl_stream, hdrs, cfg->server_stream_url,
-                      cfg->device_id, copy, sz, "frame", "frame.jpg");
+            ok = post_jpeg(curl_stream, hdrs, cfg->server_stream_url,
+                           cfg->device_id, copy, sz, "frame", "frame.jpg");
+
+        if (ok == 0) {
+            /* Live send succeeded — drain stored offline frames (batch of 5) */
+            offline_frames_drain_batch(cfg, curl_stream, hdrs, 5);
+        } else if (copy) {
+            /* Server unreachable — store frame locally if space allows */
+            if (offline_disk_ok()) {
+                offline_frames_trim();
+                offline_frames_store(copy, sz);
+            } else {
+                log_message("push_thread: disk full, dropping offline frame");
+            }
+        }
 
         free(copy);
     }

@@ -39,10 +39,14 @@ do_install() {
 
     # API key (kept 0600 so only root can read it)
     install -m 0600 ${WORKDIR}/api.key ${D}${sysconfdir}/data-collector/api.key
+
+    # Offline queue directory (persists across reboots on rootfs)
+    install -d ${D}/var/spool/data-collector
 }
 
 FILES:${PN} += " \
     ${sysconfdir}/init.d/data-collector \
     ${sysconfdir}/data-collector/server.conf \
     ${sysconfdir}/data-collector/api.key \
+    /var/spool/data-collector \
 "
